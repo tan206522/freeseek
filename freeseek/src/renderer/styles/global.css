@@ -1,0 +1,299 @@
+/* ===== Ant Design Token System — Light Theme ===== */
+:root {
+  /* Primary */
+  --primary: #1677ff;
+  --primary-hover: #4096ff;
+  --primary-active: #0958d9;
+  --primary-bg: #e6f4ff;
+  --primary-border: #91caff;
+
+  /* Functional */
+  --success: #52c41a;
+  --success-bg: #f6ffed;
+  --success-border: #b7eb8f;
+  --warning: #faad14;
+  --warning-bg: #fffbe6;
+  --warning-border: #ffe58f;
+  --error: #ff4d4f;
+  --error-bg: #fff2f0;
+  --error-border: #ffccc7;
+  --info: #1677ff;
+
+  /* Neutral */
+  --bg-base: #ffffff;
+  --bg-layout: #f5f5f5;
+  --bg-container: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-spotlight: #fafafa;
+
+  /* Fill */
+  --fill: rgba(0,0,0,0.15);
+  --fill-secondary: rgba(0,0,0,0.06);
+  --fill-tertiary: rgba(0,0,0,0.04);
+  --fill-quaternary: rgba(0,0,0,0.02);
+
+  /* Border */
+  --border-color: #d9d9d9;
+  --border-secondary: #f0f0f0;
+
+  /* Text */
+  --text: rgba(0,0,0,0.88);
+  --text-secondary: rgba(0,0,0,0.65);
+  --text-tertiary: rgba(0,0,0,0.45);
+  --text-quaternary: rgba(0,0,0,0.25);
+
+  /* Radius */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 8px;
+
+  /* Shadow */
+  --shadow: 0 1px 2px 0 rgba(0,0,0,0.03), 0 1px 6px -1px rgba(0,0,0,0.02), 0 2px 4px 0 rgba(0,0,0,0.02);
+  --shadow-secondary: 0 6px 16px 0 rgba(0,0,0,0.08), 0 3px 6px -4px rgba(0,0,0,0.12), 0 9px 28px 8px rgba(0,0,0,0.05);
+
+  /* Font */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  --font-size: 14px;
+  --font-size-sm: 12px;
+  --font-size-lg: 16px;
+  --line-height: 1.5714;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+  color: var(--text);
+  background: var(--bg-layout);
+  line-height: var(--line-height);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--primary-bg); color: var(--primary); }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-quaternary); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+/* ===== Ant Button ===== */
+.ant-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 4px 15px;
+  font-size: var(--font-size);
+  font-weight: 400;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-base);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  line-height: 1.5714;
+  white-space: nowrap;
+  user-select: none;
+}
+.ant-btn:hover { color: var(--primary-hover); border-color: var(--primary-hover); }
+.ant-btn:active { color: var(--primary-active); border-color: var(--primary-active); }
+.ant-btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+
+.ant-btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  box-shadow: 0 2px 0 rgba(5,145,255,0.1);
+}
+.ant-btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #fff; }
+.ant-btn-primary:active { background: var(--primary-active); border-color: var(--primary-active); color: #fff; }
+
+.ant-btn-danger { color: var(--error); border-color: var(--error); }
+.ant-btn-danger:hover { color: #ff7875; border-color: #ff7875; }
+
+.ant-btn-success { background: var(--success); border-color: var(--success); color: #fff; }
+.ant-btn-success:hover { background: #73d13d; border-color: #73d13d; color: #fff; }
+
+.ant-btn-link { border: none; background: none; color: var(--primary); padding: 0; height: auto; box-shadow: none; }
+.ant-btn-link:hover { color: var(--primary-hover); }
+
+.ant-btn-sm { height: 24px; padding: 0 7px; font-size: var(--font-size-sm); border-radius: var(--radius-sm); }
+
+.btn-group { display: flex; gap: 8px; margin-top: 16px; }
+
+/* ===== Ant Card ===== */
+.ant-card {
+  background: var(--bg-container);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.ant-card-head {
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+}
+.ant-card-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+.ant-card-body { padding: 24px; }
+.ant-card-body p { color: var(--text-secondary); font-size: var(--font-size); line-height: 1.6; }
+
+/* ===== Ant Table ===== */
+.ant-table { width: 100%; border-collapse: collapse; font-size: var(--font-size); }
+.ant-table th {
+  text-align: left;
+  padding: 12px 16px;
+  background: var(--bg-spotlight);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  border-bottom: 1px solid var(--border-secondary);
+}
+.ant-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-secondary);
+  color: var(--text);
+}
+.ant-table tr:hover td { background: var(--fill-quaternary); }
+.ant-table tr:last-child td { border-bottom: none; }
+
+/* ===== Ant Form ===== */
+.ant-input, .ant-select, .ant-textarea {
+  background: var(--bg-base);
+  border: 1px solid var(--border-color);
+  color: var(--text);
+  padding: 4px 11px;
+  height: 32px;
+  border-radius: var(--radius);
+  font-size: var(--font-size);
+  font-family: inherit;
+  width: 100%;
+  transition: all 0.2s;
+  outline: none;
+}
+.ant-input:hover, .ant-select:hover, .ant-textarea:hover { border-color: var(--primary-hover); }
+.ant-input:focus, .ant-select:focus, .ant-textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(5,145,255,0.06);
+}
+.ant-input::placeholder, .ant-textarea::placeholder { color: var(--text-quaternary); }
+.ant-textarea { height: auto; min-height: 60px; resize: vertical; padding: 8px 11px; font-family: inherit; }
+
+.ant-form-item { margin-bottom: 16px; }
+.ant-form-label {
+  display: block;
+  font-size: var(--font-size);
+  color: var(--text);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+/* ===== Ant Tag ===== */
+.ant-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  height: 22px;
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--fill-quaternary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ant-tag-success { background: var(--success-bg); border-color: var(--success-border); color: var(--success); }
+.ant-tag-error { background: var(--error-bg); border-color: var(--error-border); color: var(--error); }
+.ant-tag-warning { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning); }
+.ant-tag-processing { background: var(--primary-bg); border-color: var(--primary-border); color: var(--primary); }
+
+/* ===== Ant Badge / Dot ===== */
+.ant-badge-dot {
+  width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 6px;
+}
+.ant-badge-dot.success { background: var(--success); }
+.ant-badge-dot.error { background: var(--error); }
+.ant-badge-dot.warning { background: var(--warning); }
+.ant-badge-dot.processing { background: var(--primary); animation: antPulse 1.5s infinite; }
+
+/* ===== Ant Statistic ===== */
+.ant-statistic-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.ant-statistic {
+  background: var(--bg-container);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  box-shadow: var(--shadow);
+}
+.ant-statistic-title {
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.ant-statistic-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ant-statistic-value.primary { color: var(--primary); }
+.ant-statistic-value.success { color: var(--success); }
+.ant-statistic-value.error { color: var(--error); }
+
+/* ===== Code Block ===== */
+.ant-code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  background: var(--fill-quaternary);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-secondary);
+  color: var(--text);
+}
+.ant-code-block {
+  background: var(--bg-spotlight);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius);
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+  overflow-x: auto;
+  color: var(--text-secondary);
+  position: relative;
+  white-space: pre;
+}
+.ant-code-block .copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-color);
+  color: var(--text-tertiary);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+.ant-code-block .copy-btn:hover { color: var(--primary); border-color: var(--primary); }
+
+/* ===== Utilities ===== */
+@keyframes antPulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+@keyframes antSpin { to { transform: rotate(360deg); } }

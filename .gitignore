@@ -3,3 +3,6 @@ dist/
 data/
 *.js.map
 .vscode/
+Docs/
+UX/
+example/

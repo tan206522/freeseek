@@ -5,22 +5,32 @@
   "main": "dist/main/index.js",
   "type": "commonjs",
   "scripts": {
-    "build": "tsc && node -e \"require('fs').cpSync('src/renderer','dist/renderer',{recursive:true})\"",
+    "build:main": "tsc",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
     "start": "npm run build && electron dist/main/index.js",
     "dev": "npm run build && electron dist/main/index.js",
+    "web": "npm run build && node dist/main/server-standalone.js",
+    "web:start": "node dist/main/server-standalone.js",
     "auth": "tsc && node dist/main/auth.js",
     "pack": "npm run build && electron-builder --config electron-builder.json"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
     "express": "^4.21.0",
-    "playwright-core": "^1.49.0"
+    "katex": "^0.16.33",
+    "pinia": "^2.3.1",
+    "playwright-core": "^1.49.0",
+    "vue": "^3.5.29"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@vitejs/plugin-vue": "^6.0.4",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vite": "^6.4.1",
+    "vue-tsc": "^3.2.5"
   }
 }

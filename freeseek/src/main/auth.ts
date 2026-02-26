@@ -55,6 +55,18 @@ export interface Credentials {
   capturedAt: string;
 }
 
+/** 读取代理配置 */
+function loadProxyConfig(): string | null {
+  try {
+    const configFile = path.join(__dirname, "..", "..", "data", "proxy.json");
+    if (fs.existsSync(configFile)) {
+      const cfg = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      if (cfg.proxy && cfg.proxy.trim()) return cfg.proxy.trim();
+    }
+  } catch { /* ignore */ }
+  return process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || null;
+}
+
 export async function captureCredentials(
   onStatus?: (msg: string) => void,
 ): Promise<Credentials> {
@@ -62,24 +74,30 @@ export async function captureCredentials(
 
   log("正在连接 Chrome 调试端口 (9222)...");
 
+  const proxy = loadProxyConfig();
+  if (proxy) {
+    log(`使用代理: ${proxy}`);
+  }
+
   let browser;
   try {
     const res = await fetch("http://127.0.0.1:9222/json/version");
     const data = (await res.json()) as { webSocketDebuggerUrl: string };
     browser = await chromium.connectOverCDP(data.webSocketDebuggerUrl);
-    log("已连接到 Chrome");
+    log("已连接到 Chrome（代理由 Chrome 自身管理）");
   } catch {
     log("未检测到 Chrome 调试端口，正在查找本机 Chrome...");
     const chromePath = findLocalChrome();
+    const launchOpts: any = {
+      headless: false,
+      ...(proxy ? { proxy: { server: proxy } } : {}),
+    };
     if (chromePath) {
       log(`找到 Chrome: ${chromePath}`);
-      browser = await chromium.launch({
-        headless: false,
-        executablePath: chromePath,
-      });
+      browser = await chromium.launch({ ...launchOpts, executablePath: chromePath });
     } else {
       log("未找到本机 Chrome，尝试 Playwright 内置浏览器...");
-      browser = await chromium.launch({ headless: false });
+      browser = await chromium.launch(launchOpts);
     }
   }
 
