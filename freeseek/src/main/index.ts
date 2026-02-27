@@ -3,6 +3,9 @@ import path from "node:path";
 import fs from "node:fs";
 import { startServer, getStats, type ServerLog } from "./server";
 import { registry } from "./providers";
+import { loadSettings, saveSettings, getHost } from "./settings";
+import { requestQueue } from "./request-queue";
+import { credentialRefresher } from "./credential-refresher";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -71,7 +74,8 @@ ipcMain.handle("server:start", async (_event, port: number) => {
   if (serverRunning) return { ok: true, port: serverPort };
   try {
     serverPort = port || 3000;
-    serverInstance = startServer(serverPort, sendLog);
+    const host = getHost();
+    serverInstance = startServer(serverPort, sendLog, host);
     serverRunning = true;
     serverStartedAt = Date.now();
     return { ok: true, port: serverPort };
@@ -234,6 +238,63 @@ ipcMain.handle("qwen:saveManual", async (
   }
 });
 
+// --- 通用凭证池管理 ---
+ipcMain.handle("credentials:list", async (_event, providerId: string) => {
+  const provider = registry.get(providerId);
+  if (!provider) return { entries: [] };
+  const pool = provider.getCredentialPool?.();
+  if (!pool) return { entries: [] };
+  return { entries: pool.getAll(), strategy: pool.getStrategy() };
+});
+
+ipcMain.handle("credentials:add", async (_event, providerId: string, data: Record<string, any>) => {
+  const provider = registry.get(providerId);
+  if (!provider?.addCredentials) return { ok: false, error: "Not supported" };
+  try {
+    const id = provider.addCredentials(data);
+    return { ok: true, id };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("credentials:remove", async (_event, providerId: string, credentialId: string) => {
+  const provider = registry.get(providerId);
+  if (!provider?.removeCredentials) return { ok: false };
+  return { ok: provider.removeCredentials(credentialId) };
+});
+
+ipcMain.handle("credentials:reset", async (_event, providerId: string, credentialId: string) => {
+  const provider = registry.get(providerId);
+  provider?.resetCredentialStatus?.(credentialId);
+  return { ok: true };
+});
+
+ipcMain.handle("credentials:reorder", async (_event, providerId: string, ids: string[]) => {
+  const provider = registry.get(providerId);
+  provider?.getCredentialPool?.()?.reorder(ids);
+  return { ok: true };
+});
+
+ipcMain.handle("credentials:strategy", async (_event, providerId: string, strategy: string) => {
+  const provider = registry.get(providerId);
+  provider?.getCredentialPool?.()?.setStrategy(strategy as any);
+  return { ok: true };
+});
+
+// --- 请求队列状态 ---
+ipcMain.handle("queue:status", async () => {
+  return requestQueue.getStatus();
+});
+
+// --- 凭证刷新器 ---
+ipcMain.handle("refresher:status", async () => {
+  return {
+    running: credentialRefresher.isRunning(),
+    config: credentialRefresher.getConfig(),
+  };
+});
+
 // ========== 代理配置 ==========
 
 ipcMain.handle("proxy:get", async () => {
@@ -255,6 +316,43 @@ ipcMain.handle("proxy:save", async (_event, proxy: string) => {
       JSON.stringify({ proxy: proxy.trim() }, null, 2),
     );
     return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ========== 设置 ==========
+
+ipcMain.handle("settings:get", async () => {
+  return loadSettings();
+});
+
+ipcMain.handle("settings:save", async (_event, data: {
+  apiKey?: string;
+  host?: string;
+  rateLimits?: Record<string, number>;
+  autoRefresh?: { enabled?: boolean; leadTimeMinutes?: number; checkIntervalSeconds?: number };
+}) => {
+  try {
+    const updates: Record<string, any> = {};
+    if (data.apiKey !== undefined) updates.apiKey = data.apiKey.trim();
+    if (data.host !== undefined) updates.host = data.host === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1";
+    if (data.rateLimits !== undefined) {
+      updates.rateLimits = data.rateLimits;
+      for (const [pid, max] of Object.entries(data.rateLimits)) {
+        requestQueue.setConfig(pid, { maxPerMinute: max });
+      }
+    }
+    if (data.autoRefresh !== undefined) {
+      updates.autoRefresh = data.autoRefresh;
+      credentialRefresher.updateConfig({
+        enabled: data.autoRefresh.enabled,
+        leadTimeMs: (data.autoRefresh.leadTimeMinutes || 10) * 60 * 1000,
+        checkIntervalMs: (data.autoRefresh.checkIntervalSeconds || 60) * 1000,
+      });
+    }
+    saveSettings(updates);
+    return { ok: true, needRestart: data.apiKey !== undefined || data.host !== undefined };
   } catch (err: any) {
     return { ok: false, error: err.message };
   }
@@ -315,10 +413,33 @@ app.whenReady().then(() => {
   createTray();
   createWindow();
 
+  // 初始化限速配置
+  const settings = loadSettings();
+  if (settings.rateLimits) {
+    for (const [pid, max] of Object.entries(settings.rateLimits)) {
+      requestQueue.setConfig(pid, { maxPerMinute: max });
+    }
+  }
+
+  // 启动凭证自动刷新
+  credentialRefresher.setNotify((providerId, message, level) => {
+    sendLog({
+      time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+      level: level === "info" ? "info" : level === "warn" ? "warn" : "err",
+      msg: `[AutoRefresh] ${message}`,
+    });
+  });
+  credentialRefresher.start({
+    enabled: settings.autoRefresh?.enabled ?? true,
+    leadTimeMs: (settings.autoRefresh?.leadTimeMinutes ?? 10) * 60 * 1000,
+    checkIntervalMs: (settings.autoRefresh?.checkIntervalSeconds ?? 60) * 1000,
+  });
+
   // 自动启动服务（如果有任何凭证）
   const hasAnyCreds = registry.all().some((p) => p.loadCredentials());
   if (hasAnyCreds) {
-    serverInstance = startServer(serverPort, sendLog);
+    const host = getHost();
+    serverInstance = startServer(serverPort, sendLog, host);
     serverRunning = true;
     serverStartedAt = Date.now();
   }

@@ -57,6 +57,7 @@ function loadProxyConfig(): string | null {
  */
 export async function captureQwenCredentials(
   onStatus?: (msg: string) => void,
+  saveToFile = true,
 ): Promise<QwenCredentials> {
   const log = onStatus ?? console.log;
 
@@ -145,8 +146,10 @@ export async function captureQwenCredentials(
         capturedAt: new Date().toISOString(),
       };
 
-      fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
-      fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+      if (saveToFile) {
+        fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
+        fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+      }
 
       // 关闭浏览器
       try { await browser.close(); } catch { /* ignore */ }

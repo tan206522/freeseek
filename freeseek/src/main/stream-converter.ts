@@ -1,5 +1,12 @@
 import { Transform } from "node:stream";
 import crypto from "node:crypto";
+import {
+  createStreamToolCallParser,
+  parseToolCalls,
+  makeToolCallChunk,
+  makeToolCallResponse,
+  type StreamToolCallParser,
+} from "./tool-call-parser";
 
 /**
  * DeepSeek 网页版 SSE 清洗 & 转换器
@@ -121,6 +128,8 @@ export interface StreamConverterOptions {
   stripReasoning?: boolean;
   /** 是否启用激进清洗模式 */
   cleanMode?: boolean;
+  /** 是否启用 tool call 解析（当请求包含 tools 时开启） */
+  hasTools?: boolean;
 }
 
 /**
@@ -138,8 +147,11 @@ export function createStreamConverter(
   // 状态机：追踪当前是否处于思考阶段
   let thinkingPhase = model.includes("reasoner"); // reasoner 模型默认从思考开始
   let thinkingEnded = false; // 是否已检测到思考结束标记
-  let hasAnyContent = false; // 是否已收到任何正文内容
   let firstContentLogged = false; // 是否已记录第一个正文 chunk
+
+  // Tool call 解析器（仅当请求包含 tools 时启用）
+  const toolParser = options.hasTools ? createStreamToolCallParser() : null;
+  let hasEmittedToolCalls = false;
 
   const transform = new Transform({
     transform(chunk, _encoding, callback) {
@@ -162,7 +174,22 @@ export function createStreamConverter(
         }
 
         if (dataStr === "[DONE]") {
-          this.push("data: [DONE]\n\n");
+          // 流结束前，冲刷 tool parser 缓冲区
+          if (toolParser) {
+            const flushed = toolParser.flush();
+            if (flushed.completedCalls.length > 0) {
+              hasEmittedToolCalls = true;
+              this.push(
+                `data: ${JSON.stringify(makeToolCallChunk(completionId, created, model, flushed.completedCalls))}\n\n`,
+              );
+            }
+            if (flushed.pendingText) {
+              this.push(
+                `data: ${JSON.stringify(makeChunk(completionId, created, model, flushed.pendingText, false))}\n\n`,
+              );
+            }
+          }
+          // 不在这里推送 [DONE]，让 flush 处理
           continue;
         }
 
@@ -187,10 +214,7 @@ export function createStreamConverter(
             if (afterMarker.trim()) {
               const cleaned = sanitize(afterMarker, false);
               if (cleaned) {
-                hasAnyContent = true;
-                this.push(
-                  `data: ${JSON.stringify(makeChunk(completionId, created, model, cleaned, false))}\n\n`,
-                );
+                emitContent(this, completionId, created, model, cleaned, false, toolParser);
               }
             }
             continue;
@@ -220,8 +244,6 @@ export function createStreamConverter(
           // 如果设置了 stripReasoning，跳过思考链
           if (options.stripReasoning && isReasoning) continue;
 
-          if (!isReasoning) hasAnyContent = true;
-
           // 记录第一个正文 chunk 的原始内容，帮助排查前缀问题
           if (!isReasoning && !firstContentLogged) {
             firstContentLogged = true;
@@ -229,14 +251,14 @@ export function createStreamConverter(
             console.log(`[StreamConverter] 首个正文 chunk: "${content.slice(0, 60)}" | 前10字符编码: [${charCodes.join(", ")}]`);
           }
 
-          const outChunk = makeChunk(
-            completionId,
-            created,
-            model,
-            content,
-            isReasoning,
-          );
-          this.push(`data: ${JSON.stringify(outChunk)}\n\n`);
+          // 思考链内容直接输出，不经过 tool parser
+          if (isReasoning) {
+            this.push(
+              `data: ${JSON.stringify(makeChunk(completionId, created, model, content, true))}\n\n`,
+            );
+          } else {
+            emitContent(this, completionId, created, model, content, false, toolParser);
+          }
         } catch {
           // 忽略解析错误
         }
@@ -245,6 +267,22 @@ export function createStreamConverter(
     },
 
     flush(callback) {
+      // 冲刷 tool parser
+      if (toolParser) {
+        const flushed = toolParser.flush();
+        if (flushed.completedCalls.length > 0) {
+          hasEmittedToolCalls = true;
+          this.push(
+            `data: ${JSON.stringify(makeToolCallChunk(completionId, created, model, flushed.completedCalls))}\n\n`,
+          );
+        }
+        if (flushed.pendingText) {
+          this.push(
+            `data: ${JSON.stringify(makeChunk(completionId, created, model, flushed.pendingText, false))}\n\n`,
+          );
+        }
+      }
+
       const endChunk = {
         id: completionId,
         object: "chat.completion.chunk",
@@ -254,7 +292,7 @@ export function createStreamConverter(
           {
             index: 0,
             delta: {},
-            finish_reason: "stop",
+            finish_reason: hasEmittedToolCalls ? "tool_calls" : "stop",
           },
         ],
       };
@@ -265,6 +303,43 @@ export function createStreamConverter(
   });
 
   return { transform, getParentMessageId: () => parentMessageId };
+}
+
+/**
+ * 输出正文内容，如果启用了 tool parser 则经过解析
+ */
+function emitContent(
+  stream: Transform,
+  completionId: string,
+  created: number,
+  model: string,
+  content: string,
+  isReasoning: boolean,
+  toolParser: StreamToolCallParser | null,
+) {
+  if (!toolParser || isReasoning) {
+    stream.push(
+      `data: ${JSON.stringify(makeChunk(completionId, created, model, content, isReasoning))}\n\n`,
+    );
+    return;
+  }
+
+  // 通过 tool parser 处理
+  const result = toolParser.feed(content);
+
+  // 输出普通文本部分
+  if (result.pendingText) {
+    stream.push(
+      `data: ${JSON.stringify(makeChunk(completionId, created, model, result.pendingText, false))}\n\n`,
+    );
+  }
+
+  // 输出已完成的 tool calls
+  if (result.completedCalls.length > 0) {
+    stream.push(
+      `data: ${JSON.stringify(makeToolCallChunk(completionId, created, model, result.completedCalls))}\n\n`,
+    );
+  }
 }
 
 function makeChunk(
@@ -370,6 +445,14 @@ export async function collectFullResponse(
       } catch {
         // ignore
       }
+    }
+  }
+
+  // 如果启用了 tool 解析，检测完整内容中的 tool_call 标签
+  if (options.hasTools && content) {
+    const parsed = parseToolCalls(content);
+    if (parsed.toolCalls.length > 0) {
+      return makeToolCallResponse(model, parsed.toolCalls, parsed.textContent || null);
     }
   }
 

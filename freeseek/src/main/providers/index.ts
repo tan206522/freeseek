@@ -13,3 +13,5 @@ export type {
 export { DeepSeekProvider } from "./deepseek";
 export { ClaudeProvider } from "./claude";
 export { QwenProvider } from "./qwen";
+export type { CredentialEntry, PoolStrategy, PoolSummary } from "../credential-pool";
+export { CredentialPool } from "../credential-pool";

@@ -6,7 +6,6 @@
 
 const isElectron = !!(window as any).freeseek;
 
-// Web 模式下管理面板 API 基地址（同源）
 function apiBase(): string {
   return window.location.origin;
 }
@@ -22,6 +21,11 @@ async function apiPost(path: string, body?: any) {
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  return res.json();
+}
+
+async function apiDelete(path: string) {
+  const res = await fetch(`${apiBase()}${path}`, { method: "DELETE" });
   return res.json();
 }
 
@@ -53,7 +57,6 @@ export const bridge = {
   // 服务控制
   startServer: async (port: number) => {
     if (isElectron) return (window as any).freeseek.startServer(port);
-    // Web 模式下服务已经在运行
     return { ok: true, port };
   },
   stopServer: async () => {
@@ -135,6 +138,44 @@ export const bridge = {
     return apiPost("/api/qwen/saveManual", creds);
   },
 
+  // 通用凭证池管理
+  listCredentials: async (providerId: string) => {
+    if (isElectron) return (window as any).freeseek.listCredentials(providerId);
+    return apiGet(`/api/credentials/${providerId}`);
+  },
+  addCredential: async (providerId: string, data: Record<string, any>) => {
+    if (isElectron) return (window as any).freeseek.addCredential(providerId, data);
+    return apiPost(`/api/credentials/${providerId}/add`, data);
+  },
+  removeCredential: async (providerId: string, credentialId: string) => {
+    if (isElectron) return (window as any).freeseek.removeCredential(providerId, credentialId);
+    return apiDelete(`/api/credentials/${providerId}/${credentialId}`);
+  },
+  resetCredential: async (providerId: string, credentialId: string) => {
+    if (isElectron) return (window as any).freeseek.resetCredential(providerId, credentialId);
+    return apiPost(`/api/credentials/${providerId}/${credentialId}/reset`);
+  },
+  reorderCredentials: async (providerId: string, ids: string[]) => {
+    if (isElectron) return (window as any).freeseek.reorderCredentials(providerId, ids);
+    return apiPost(`/api/credentials/${providerId}/reorder`, { ids });
+  },
+  setCredentialStrategy: async (providerId: string, strategy: string) => {
+    if (isElectron) return (window as any).freeseek.setCredentialStrategy(providerId, strategy);
+    return apiPost(`/api/credentials/${providerId}/strategy`, { strategy });
+  },
+
+  // 请求队列
+  getQueueStatus: async () => {
+    if (isElectron) return (window as any).freeseek.getQueueStatus();
+    return apiGet("/api/queue/status");
+  },
+
+  // 凭证刷新器
+  getRefresherStatus: async () => {
+    if (isElectron) return (window as any).freeseek.getRefresherStatus();
+    return apiGet("/api/refresher/status");
+  },
+
   // 代理
   getProxy: async () => {
     if (isElectron) return (window as any).freeseek.getProxy();
@@ -145,10 +186,24 @@ export const bridge = {
     return apiPost("/api/proxy/save", { proxy });
   },
 
+  // 设置
+  getSettings: async () => {
+    if (isElectron) return (window as any).freeseek.getSettings();
+    return apiGet("/api/settings/get");
+  },
+  saveSettings: async (data: {
+    apiKey?: string;
+    host?: string;
+    rateLimits?: Record<string, number>;
+    autoRefresh?: { enabled?: boolean; leadTimeMinutes?: number; checkIntervalSeconds?: number };
+  }) => {
+    if (isElectron) return (window as any).freeseek.saveSettings(data);
+    return apiPost("/api/settings/save", data);
+  },
+
   // 日志监听
   onLog: (callback: LogCallback) => {
     if (isElectron) return (window as any).freeseek.onLog(callback);
-    // Web 模式：轮询
     logCallbacks.push(callback);
     startLogPolling();
     return () => {
@@ -156,7 +211,7 @@ export const bridge = {
     };
   },
 
-  // Auth 状态（Web 模式下不支持实时推送，返回空 cleanup）
+  // Auth 状态
   onAuthStatus: (callback: (msg: string) => void) => {
     if (isElectron) return (window as any).freeseek.onAuthStatus(callback);
     return () => {};

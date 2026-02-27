@@ -36,11 +36,37 @@ cd freeseek
 npm install
 npm run build
 npm run web:start          # 默认 API 端口 3000，管理面板端口 3001
-# 或自定义端口
-node dist/main/server-standalone.js --port 8080 --admin-port 8081
+# 或自定义端口和监听地址
+node dist/main/server-standalone.js --port 8080 --admin-port 8081 --host 0.0.0.0
 ```
 
 启动后访问 `http://你的服务器IP:3001` 打开管理面板，在凭证页面配置登录信息。
+
+### Docker 部署
+
+```bash
+cd freeseek
+
+# 方式一：docker-compose（推荐）
+docker compose up -d
+
+# 方式二：手动构建
+docker build -t freeseek .
+docker run -d --name freeseek \
+  -p 3000:3000 -p 3001:3001 \
+  -v ./data:/app/data \
+  freeseek
+```
+
+启动后访问 `http://你的服务器IP:3001` 管理面板，凭证数据持久化在 `data/` 目录中。
+
+支持以下环境变量：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PORT` | `3000` | API 代理端口 |
+| `ADMIN_PORT` | `3001` | 管理面板端口 |
+| `HOST` | `0.0.0.0` | API 监听地址 |
 
 ## 凭证配置
 
@@ -183,7 +209,7 @@ curl -N http://127.0.0.1:3000/v1/chat/completions -H "Content-Type: application/
 | Python | `OpenAI(base_url="http://127.0.0.1:3000/v1", api_key="any")` |
 | Node.js | `new OpenAI({ baseURL: "http://127.0.0.1:3000/v1", apiKey: "any" })` |
 
-API Key 随便填，服务不做鉴权。
+默认不鉴权，API Key 随便填。如果在「设置」页面配置了 API Key，则需要使用你设定的 Key。
 
 ## 项目结构
 

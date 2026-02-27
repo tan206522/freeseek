@@ -7,6 +7,7 @@ import type {
   ChatResponse,
   StreamConverterResult,
   StreamConverterOptions,
+  ToolDefinition,
 } from "./types";
 import { ClaudeWebClient, type ClaudeCredentials } from "../claude-client";
 import {
@@ -18,7 +19,12 @@ import {
   createClaudeStreamConverter,
   collectClaudeFullResponse,
 } from "../claude-stream";
-import fs from "node:fs";
+import { CredentialPool } from "../credential-pool";
+import {
+  buildToolSystemPrompt,
+  serializeToolResultMessage,
+  serializeAssistantToolCalls,
+} from "../tool-call-parser";
 import path from "node:path";
 
 const AUTH_FILE = path.join(__dirname, "..", "..", "data", "claude-auth.json");
@@ -37,8 +43,13 @@ export class ClaudeProvider implements Provider {
   readonly id = "claude";
   readonly name = "Claude";
 
-  private client: ClaudeWebClient | null = null;
+  private pool: CredentialPool;
+  private clients = new Map<string, ClaudeWebClient>();
   private sessionCache = new Map<string, string>();
+
+  constructor() {
+    this.pool = new CredentialPool(AUTH_FILE);
+  }
 
   // --- 模型 ---
 
@@ -61,14 +72,20 @@ export class ClaudeProvider implements Provider {
     return MODEL_ALIASES[model] || model;
   }
 
+  // --- 凭证池 ---
+
+  getCredentialPool(): CredentialPool {
+    return this.pool;
+  }
+
   // --- 凭证 ---
 
   loadCredentials(): ClaudeCredentials | null {
-    return loadClaudeCredentials();
+    return this.pool.first() as ClaudeCredentials | null;
   }
 
   getCredentialsSummary(): CredentialsSummary | null {
-    const creds = loadClaudeCredentials();
+    const creds = this.pool.first() as ClaudeCredentials | null;
     if (!creds) return null;
     return {
       hasCredentials: true,
@@ -77,17 +94,16 @@ export class ClaudeProvider implements Provider {
       sessionKeyPrefix: creds.sessionKey?.slice(0, 20) + "...",
       hasCookie: !!creds.cookie,
       hasOrganizationId: !!creds.organizationId,
+      pool: this.pool.getSummary(),
     };
   }
 
   clearCredentials(): boolean {
     this.resetClient();
-    return clearClaudeCredentials();
+    return this.pool.clearAll();
   }
 
   saveManualCredentials(data: Record<string, any>): void {
-    const authDir = path.dirname(AUTH_FILE);
-    fs.mkdirSync(authDir, { recursive: true });
     const creds = {
       sessionKey: data.sessionKey.trim(),
       cookie:
@@ -97,38 +113,73 @@ export class ClaudeProvider implements Provider {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       capturedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+    this.pool.set(creds);
     this.resetClient();
+  }
+
+  addCredentials(data: Record<string, any>): string {
+    const creds = {
+      sessionKey: data.sessionKey.trim(),
+      cookie:
+        data.cookie?.trim() || `sessionKey=${data.sessionKey.trim()}`,
+      userAgent:
+        data.userAgent?.trim() ||
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      capturedAt: new Date().toISOString(),
+    };
+    this.resetClient();
+    return this.pool.add(creds);
+  }
+
+  removeCredentials(id: string): boolean {
+    const removed = this.pool.remove(id);
+    if (removed) {
+      const client = this.clients.get(id);
+      if (client) {
+        client.close().catch(() => {});
+        this.clients.delete(id);
+      }
+    }
+    return removed;
+  }
+
+  resetCredentialStatus(id: string): void {
+    this.pool.resetStatus(id);
   }
 
   async captureCredentials(
     onStatus?: (msg: string) => void,
   ): Promise<BaseCredentials> {
-    const creds = await captureClaudeCredentials(onStatus);
+    const creds = await captureClaudeCredentials(onStatus, false);
+    this.pool.add(creds);
     this.resetClient();
     return creds;
   }
 
   // --- 客户端 ---
 
-  private async getClient(): Promise<ClaudeWebClient> {
-    if (this.client) return this.client;
-    const creds = loadClaudeCredentials();
-    if (!creds) throw new Error("未找到 Claude 凭证，请先捕获 Claude 登录凭证");
-    this.client = new ClaudeWebClient(creds);
-    await this.client.init();
-    return this.client;
+  private async getClient(credentialId: string, creds: ClaudeCredentials): Promise<ClaudeWebClient> {
+    let client = this.clients.get(credentialId);
+    if (client) return client;
+    client = new ClaudeWebClient(creds);
+    await client.init();
+    this.clients.set(credentialId, client);
+    return client;
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    const client = await this.getClient();
     const mappedModel = this.mapModel(request.model);
-    const prompt = this.buildPrompt(request.messages);
-
-    // 获取或创建会话
+    const prompt = this.buildPrompt(request.messages, request.tools);
     const sessionKey = request.sessionKey || "claude-default";
-    let conversationId = this.sessionCache.get(sessionKey);
 
+    // 多账号轮询
+    const entry = this.pool.next();
+    if (!entry) throw new Error("未找到 Claude 凭证，请先捕获 Claude 登录凭证");
+
+    const creds = entry.credentials as ClaudeCredentials;
+    const client = await this.getClient(entry.id, creds);
+
+    let conversationId = this.sessionCache.get(sessionKey);
     if (!conversationId) {
       conversationId = await client.createConversation();
       this.sessionCache.set(sessionKey, conversationId);
@@ -142,8 +193,8 @@ export class ClaudeProvider implements Provider {
         message: prompt,
         model: mappedModel,
       });
+      this.pool.markSuccess(entry.id);
     } catch (chatErr: any) {
-      // 会话失效，重试
       if (
         chatErr.message?.includes("403") ||
         chatErr.message?.includes("401") ||
@@ -151,14 +202,35 @@ export class ClaudeProvider implements Provider {
         chatErr.message?.includes("认证")
       ) {
         this.sessionCache.delete(sessionKey);
-        const newConvId = await client.createConversation();
-        this.sessionCache.set(sessionKey, newConvId);
-        responseStream = await client.chat({
-          conversationId: newConvId,
-          message: prompt,
-          model: mappedModel,
-        });
+        try {
+          const newConvId = await client.createConversation();
+          this.sessionCache.set(sessionKey, newConvId);
+          responseStream = await client.chat({
+            conversationId: newConvId,
+            message: prompt,
+            model: mappedModel,
+          });
+          this.pool.markSuccess(entry.id);
+        } catch (retryErr: any) {
+          this.pool.markFailed(entry.id, retryErr.message);
+          // 尝试切换到下一个凭证
+          const fallback = this.pool.next();
+          if (fallback && fallback.id !== entry.id) {
+            const fbCreds = fallback.credentials as ClaudeCredentials;
+            const fbClient = await this.getClient(fallback.id, fbCreds);
+            const fbConvId = await fbClient.createConversation();
+            responseStream = await fbClient.chat({
+              conversationId: fbConvId,
+              message: prompt,
+              model: mappedModel,
+            });
+            this.pool.markSuccess(fallback.id);
+          } else {
+            throw retryErr;
+          }
+        }
       } else {
+        this.pool.markFailed(entry.id, chatErr.message);
         throw chatErr;
       }
     }
@@ -167,10 +239,10 @@ export class ClaudeProvider implements Provider {
   }
 
   resetClient(): void {
-    if (this.client) {
-      this.client.close().catch(() => {});
+    for (const client of this.clients.values()) {
+      client.close().catch(() => {});
     }
-    this.client = null;
+    this.clients.clear();
     this.sessionCache.clear();
   }
 
@@ -179,6 +251,7 @@ export class ClaudeProvider implements Provider {
   createStreamConverter(options: StreamConverterOptions): StreamConverterResult {
     const { transform } = createClaudeStreamConverter({
       model: this.mapModel(options.model),
+      hasTools: options.hasTools,
     });
     return { transform };
   }
@@ -186,13 +259,14 @@ export class ClaudeProvider implements Provider {
   collectFullResponse(
     stream: ReadableStream<Uint8Array>,
     model: string,
+    options?: { stripReasoning?: boolean; cleanMode?: boolean; hasTools?: boolean },
   ): Promise<object> {
-    return collectClaudeFullResponse(stream, this.mapModel(model));
+    return collectClaudeFullResponse(stream, this.mapModel(model), options);
   }
 
   // --- 内部工具 ---
 
-  private buildPrompt(messages: any[]): string {
+  private buildPrompt(messages: any[], tools?: ToolDefinition[]): string {
     const extractContent = (m: any) =>
       typeof m.content === "string"
         ? m.content
@@ -201,29 +275,56 @@ export class ClaudeProvider implements Provider {
             .map((p: any) => p.text)
             .join("");
 
+    // 构建工具注入的 system prompt
+    const toolPrompt = tools && tools.length > 0 ? buildToolSystemPrompt(tools) : "";
+
     const nonSystemMessages = messages.filter(
       (m: any) => m.role !== "system",
     );
     const systemMessages = messages.filter((m: any) => m.role === "system");
 
+    // 合并系统消息和工具 prompt
+    const systemParts: string[] = [];
+    if (systemMessages.length > 0) {
+      systemParts.push(systemMessages.map(extractContent).join("\n"));
+    }
+    if (toolPrompt) {
+      systemParts.push(toolPrompt);
+    }
+    const fullSystemPrompt = systemParts.join("\n\n");
+
+    // 只有一条 user 消息的简单场景
     if (
       nonSystemMessages.length === 1 &&
       nonSystemMessages[0].role === "user"
     ) {
       const userContent = extractContent(nonSystemMessages[0]);
-      if (systemMessages.length > 0) {
-        const sysContent = systemMessages.map(extractContent).join("\n");
-        return `${sysContent}\n\n${userContent}`;
+      if (fullSystemPrompt) {
+        return `${fullSystemPrompt}\n\n${userContent}`;
       }
       return userContent;
     }
 
+    // 多轮对话场景
     const parts: string[] = [];
+    if (fullSystemPrompt) {
+      parts.push(`[System]\n${fullSystemPrompt}`);
+    }
+
     for (const m of messages) {
-      const content = extractContent(m);
-      if (m.role === "system") parts.push(`[System]\n${content}`);
-      else if (m.role === "user") parts.push(`[User]\n${content}`);
-      else parts.push(`[Assistant]\n${content}`);
+      if (m.role === "system") continue; // 已合并到上面
+
+      if (m.role === "tool") {
+        // 工具执行结果
+        parts.push(serializeToolResultMessage(m));
+      } else if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+        // assistant 消息包含 tool_calls
+        parts.push(`[Assistant]\n${serializeAssistantToolCalls(m)}`);
+      } else if (m.role === "user") {
+        parts.push(`[User]\n${extractContent(m)}`);
+      } else if (m.role === "assistant") {
+        parts.push(`[Assistant]\n${extractContent(m)}`);
+      }
     }
     return parts.join("\n\n");
   }

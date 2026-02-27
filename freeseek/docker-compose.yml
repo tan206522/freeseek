@@ -1,0 +1,13 @@
+services:
+  freeseek:
+    build: .
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3000
+      - ADMIN_PORT=3001
+      - HOST=0.0.0.0
+    restart: unless-stopped

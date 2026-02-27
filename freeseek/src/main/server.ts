@@ -1,6 +1,8 @@
 import express from "express";
-import { Readable, Transform as NodeTransform } from "node:stream";
+import { Readable } from "node:stream";
 import { registry } from "./providers";
+import { getApiKey } from "./settings";
+import { requestQueue } from "./request-queue";
 
 export interface ServerLog {
   time: string;
@@ -40,6 +42,18 @@ export function createApp() {
     next();
   });
 
+  // API Key 鉴权（未设置 Key 时跳过）
+  app.use("/v1", (req, res, next) => {
+    const key = getApiKey();
+    if (!key) return next();
+    const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
+    if (token === key) return next();
+    emitLog("warn", `API 鉴权失败: ${req.method} ${req.path}`);
+    return res.status(401).json({
+      error: { message: "Invalid API key", type: "authentication_error" },
+    });
+  });
+
   // 模型列表
   app.get("/v1/models", (_req, res) => {
     emitLog("ok", "GET /v1/models → 200");
@@ -60,9 +74,10 @@ export function createApp() {
         stream = false,
         strip_reasoning = false,
         clean_mode = false,
+        tools,
+        tool_choice,
       } = req.body;
 
-      // 通过 registry 查找对应的 Provider
       const provider = registry.resolve(model);
       if (!provider) {
         emitLog("err", `未知模型: ${model}`);
@@ -79,7 +94,7 @@ export function createApp() {
 
       emitLog(
         "info",
-        `POST /v1/chat/completions → [${provider.name}] model=${model}${model !== mappedModel ? `→${mappedModel}` : ""}, stream=${stream}${stripReasoning ? ", strip_reasoning" : ""}${cleanMode ? ", clean_mode" : ""}`,
+        `POST /v1/chat/completions → [${provider.name}] model=${model}${model !== mappedModel ? `→${mappedModel}` : ""}, stream=${stream}${stripReasoning ? ", strip_reasoning" : ""}${cleanMode ? ", clean_mode" : ""}${Array.isArray(tools) && tools.length > 0 ? `, tools=${tools.length}` : ""}`,
       );
 
       const sessionKey =
@@ -87,15 +102,22 @@ export function createApp() {
 
       const startTime = Date.now();
 
-      // 调用 Provider 的 chat 方法
-      const { stream: responseStream } = await provider.chat({
-        model,
-        messages,
-        stream,
-        strip_reasoning: stripReasoning,
-        clean_mode: cleanMode,
-        sessionKey,
-      });
+      // 通过请求队列限速
+      const hasTools = Array.isArray(tools) && tools.length > 0;
+
+      const chatResult = await requestQueue.enqueue(provider.id, () =>
+        provider.chat({
+          model,
+          messages,
+          stream,
+          strip_reasoning: stripReasoning,
+          clean_mode: cleanMode,
+          sessionKey,
+          ...(hasTools ? { tools, tool_choice } : {}),
+        }),
+      );
+
+      const responseStream = chatResult.stream;
 
       if (!responseStream) {
         emitLog("err", `  └─ [${provider.name}] 返回空响应`);
@@ -115,6 +137,7 @@ export function createApp() {
           model,
           stripReasoning,
           cleanMode,
+          hasTools,
         });
 
         const nodeStream = Readable.fromWeb(responseStream as any);
@@ -148,7 +171,7 @@ export function createApp() {
         const result = await provider.collectFullResponse(
           responseStream,
           model,
-          { stripReasoning, cleanMode },
+          { stripReasoning, cleanMode, hasTools },
         );
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         emitLog(
@@ -173,9 +196,12 @@ export function createApp() {
 
     for (const p of providers) {
       const creds = p.loadCredentials();
+      const pool = p.getCredentialPool?.();
       status[p.id] = {
         hasCredentials: !!creds,
         capturedAt: creds?.capturedAt ?? null,
+        credentialCount: pool?.count() ?? (creds ? 1 : 0),
+        activeCount: pool?.activeCount() ?? (creds ? 1 : 0),
       };
       if (creds) anyCredentials = true;
     }
@@ -188,6 +214,7 @@ export function createApp() {
     res.json({
       status: anyCredentials ? "ok" : "no_credentials",
       providers: status,
+      queue: requestQueue.getStatus(),
     });
   });
 
@@ -207,6 +234,7 @@ export function getStats() {
     totalInputTokens,
     totalOutputTokens,
     totalTokens: totalInputTokens + totalOutputTokens,
+    queue: requestQueue.getStatus(),
   };
 }
 
@@ -217,11 +245,17 @@ export function resetSessions() {
 export function startServer(
   port = 3000,
   onLog?: LogCallback,
+  host = "127.0.0.1",
 ): ReturnType<ReturnType<typeof createApp>["listen"]> {
   if (onLog) logCallback = onLog;
   const app = createApp();
-  return app.listen(port, "127.0.0.1", () => {
-    emitLog("info", `FreeSeek 反代服务已启动: http://127.0.0.1:${port}`);
+  return app.listen(port, host, () => {
+    emitLog("info", `FreeSeek 反代服务已启动: http://${host}:${port}`);
+    if (getApiKey()) {
+      emitLog("info", "API Key 鉴权: 已启用");
+    } else if (host === "0.0.0.0") {
+      emitLog("warn", "监听 0.0.0.0 但未设置 API Key，建议在设置中配置");
+    }
     emitLog(
       "info",
       `已注册 Provider: ${registry.all().map((p) => p.name).join(", ")}`,

@@ -1,5 +1,11 @@
 import { Transform } from "node:stream";
 import crypto from "node:crypto";
+import {
+  createStreamToolCallParser,
+  parseToolCalls,
+  makeToolCallChunk,
+  makeToolCallResponse,
+} from "./tool-call-parser";
 
 /**
  * Claude 网页版 SSE → OpenAI 兼容格式转换器
@@ -20,6 +26,8 @@ import crypto from "node:crypto";
 export interface ClaudeStreamOptions {
   /** 映射后的模型名 */
   model?: string;
+  /** 是否启用 tool call 解析 */
+  hasTools?: boolean;
 }
 
 export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
@@ -28,6 +36,10 @@ export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
   const created = Math.floor(Date.now() / 1000);
   let buffer = "";
   let currentEvent = "";
+
+  // Tool call 解析器（仅当请求包含 tools 时启用）
+  const toolParser = options.hasTools ? createStreamToolCallParser() : null;
+  let hasEmittedToolCalls = false;
 
   const transform = new Transform({
     transform(chunk, _encoding, callback) {
@@ -51,6 +63,30 @@ export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
           : trimmed.slice(5).trim();
 
         if (!dataStr || dataStr === "[DONE]") {
+          // 流结束前，冲刷 tool parser 缓冲区
+          if (toolParser) {
+            const flushed = toolParser.flush();
+            if (flushed.completedCalls.length > 0) {
+              hasEmittedToolCalls = true;
+              this.push(
+                `data: ${JSON.stringify(makeToolCallChunk(completionId, created, model, flushed.completedCalls))}\n\n`,
+              );
+            }
+            if (flushed.pendingText) {
+              const outChunk = {
+                id: completionId,
+                object: "chat.completion.chunk",
+                created,
+                model,
+                choices: [{
+                  index: 0,
+                  delta: { content: flushed.pendingText },
+                  finish_reason: null,
+                }],
+              };
+              this.push(`data: ${JSON.stringify(outChunk)}\n\n`);
+            }
+          }
           this.push("data: [DONE]\n\n");
           continue;
         }
@@ -60,18 +96,46 @@ export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
           const text = extractClaudeText(data, currentEvent);
 
           if (text) {
-            const outChunk = {
-              id: completionId,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              choices: [{
-                index: 0,
-                delta: { content: text },
-                finish_reason: null,
-              }],
-            };
-            this.push(`data: ${JSON.stringify(outChunk)}\n\n`);
+            if (toolParser) {
+              // 通过 tool parser 处理
+              const result = toolParser.feed(text);
+
+              if (result.pendingText) {
+                const outChunk = {
+                  id: completionId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model,
+                  choices: [{
+                    index: 0,
+                    delta: { content: result.pendingText },
+                    finish_reason: null,
+                  }],
+                };
+                this.push(`data: ${JSON.stringify(outChunk)}\n\n`);
+              }
+
+              if (result.completedCalls.length > 0) {
+                hasEmittedToolCalls = true;
+                this.push(
+                  `data: ${JSON.stringify(makeToolCallChunk(completionId, created, model, result.completedCalls))}\n\n`,
+                );
+              }
+            } else {
+              // 无 tool parser，直接输出
+              const outChunk = {
+                id: completionId,
+                object: "chat.completion.chunk",
+                created,
+                model,
+                choices: [{
+                  index: 0,
+                  delta: { content: text },
+                  finish_reason: null,
+                }],
+              };
+              this.push(`data: ${JSON.stringify(outChunk)}\n\n`);
+            }
           }
 
           // 检测结束
@@ -79,6 +143,31 @@ export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
             currentEvent === "message_stop" ||
             currentEvent === "message_delta" && data.delta?.stop_reason
           ) {
+            // 冲刷 tool parser
+            if (toolParser) {
+              const flushed = toolParser.flush();
+              if (flushed.completedCalls.length > 0) {
+                hasEmittedToolCalls = true;
+                this.push(
+                  `data: ${JSON.stringify(makeToolCallChunk(completionId, created, model, flushed.completedCalls))}\n\n`,
+                );
+              }
+              if (flushed.pendingText) {
+                const outChunk = {
+                  id: completionId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model,
+                  choices: [{
+                    index: 0,
+                    delta: { content: flushed.pendingText },
+                    finish_reason: null,
+                  }],
+                };
+                this.push(`data: ${JSON.stringify(outChunk)}\n\n`);
+              }
+            }
+
             const endChunk = {
               id: completionId,
               object: "chat.completion.chunk",
@@ -87,7 +176,7 @@ export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
               choices: [{
                 index: 0,
                 delta: {},
-                finish_reason: "stop",
+                finish_reason: hasEmittedToolCalls ? "tool_calls" : "stop",
               }],
             };
             this.push(`data: ${JSON.stringify(endChunk)}\n\n`);
@@ -101,6 +190,31 @@ export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
     },
 
     flush(callback) {
+      // 冲刷 tool parser
+      if (toolParser) {
+        const flushed = toolParser.flush();
+        if (flushed.completedCalls.length > 0) {
+          hasEmittedToolCalls = true;
+          this.push(
+            `data: ${JSON.stringify(makeToolCallChunk(completionId, created, model, flushed.completedCalls))}\n\n`,
+          );
+        }
+        if (flushed.pendingText) {
+          const outChunk = {
+            id: completionId,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [{
+              index: 0,
+              delta: { content: flushed.pendingText },
+              finish_reason: null,
+            }],
+          };
+          this.push(`data: ${JSON.stringify(outChunk)}\n\n`);
+        }
+      }
+
       // 确保发送结束标记
       const endChunk = {
         id: completionId,
@@ -110,7 +224,7 @@ export function createClaudeStreamConverter(options: ClaudeStreamOptions = {}) {
         choices: [{
           index: 0,
           delta: {},
-          finish_reason: "stop",
+          finish_reason: hasEmittedToolCalls ? "tool_calls" : "stop",
         }],
       };
       this.push(`data: ${JSON.stringify(endChunk)}\n\n`);
@@ -150,6 +264,7 @@ function extractClaudeText(data: any, event: string): string | null {
 export async function collectClaudeFullResponse(
   stream: ReadableStream<Uint8Array>,
   model: string,
+  options?: { hasTools?: boolean },
 ): Promise<object> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -184,6 +299,14 @@ export async function collectClaudeFullResponse(
         const text = extractClaudeText(data, currentEvent);
         if (text) content += text;
       } catch { /* ignore */ }
+    }
+  }
+
+  // 如果启用了 tool 解析，检测完整内容中的 tool_call 标签
+  if (options?.hasTools && content) {
+    const parsed = parseToolCalls(content);
+    if (parsed.toolCalls.length > 0) {
+      return makeToolCallResponse(model, parsed.toolCalls, parsed.textContent || null);
     }
   }
 

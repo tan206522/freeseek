@@ -51,6 +51,7 @@ function loadProxyConfig(): string | null {
  */
 export async function captureClaudeCredentials(
   onStatus?: (msg: string) => void,
+  saveToFile = true,
 ): Promise<ClaudeCredentials> {
   const log = onStatus ?? console.log;
 
@@ -114,8 +115,10 @@ export async function captureClaudeCredentials(
           capturedAt: new Date().toISOString(),
         };
 
-        fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
-        fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+        if (saveToFile) {
+          fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
+          fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+        }
         resolve(creds);
       }
     };

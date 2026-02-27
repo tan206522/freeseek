@@ -11,14 +11,13 @@ import type {
 import { QwenWebClient, type QwenCredentials } from "../qwen-client";
 import {
   loadQwenCredentials,
-  clearQwenCredentials,
   captureQwenCredentials,
 } from "../qwen-auth";
 import {
   createQwenStreamConverter,
   collectQwenFullResponse,
 } from "../qwen-stream";
-import fs from "node:fs";
+import { CredentialPool } from "../credential-pool";
 import path from "node:path";
 
 const AUTH_FILE = path.join(__dirname, "..", "..", "data", "qwen-auth.json");
@@ -30,7 +29,12 @@ export class QwenProvider implements Provider {
   readonly id = "qwen";
   readonly name = "通义千问";
 
+  private pool: CredentialPool;
   private chatIdCache = new Map<string, string>();
+
+  constructor() {
+    this.pool = new CredentialPool(AUTH_FILE);
+  }
 
   // --- 模型 ---
 
@@ -52,14 +56,20 @@ export class QwenProvider implements Provider {
     return model;
   }
 
+  // --- 凭证池 ---
+
+  getCredentialPool(): CredentialPool {
+    return this.pool;
+  }
+
   // --- 凭证 ---
 
   loadCredentials(): QwenCredentials | null {
-    return loadQwenCredentials();
+    return this.pool.first() as QwenCredentials | null;
   }
 
   getCredentialsSummary(): CredentialsSummary | null {
-    const creds = loadQwenCredentials();
+    const creds = this.pool.first() as QwenCredentials | null;
     if (!creds) return null;
     return {
       hasCredentials: true,
@@ -70,17 +80,16 @@ export class QwenProvider implements Provider {
       tokenPrefix: creds.token ? creds.token.slice(0, 20) + "..." : "",
       hasBxUa: !!creds.bxUa,
       hasBxUmidtoken: !!creds.bxUmidtoken,
+      pool: this.pool.getSummary(),
     };
   }
 
   clearCredentials(): boolean {
     this.resetClient();
-    return clearQwenCredentials();
+    return this.pool.clearAll();
   }
 
   saveManualCredentials(data: Record<string, any>): void {
-    const authDir = path.dirname(AUTH_FILE);
-    fs.mkdirSync(authDir, { recursive: true });
     const creds: QwenCredentials = {
       cookie: data.cookie?.trim() || "",
       token: data.token?.trim() || "",
@@ -91,14 +100,37 @@ export class QwenProvider implements Provider {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
       capturedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+    this.pool.set(creds);
     this.resetClient();
+  }
+
+  addCredentials(data: Record<string, any>): string {
+    const creds: QwenCredentials = {
+      cookie: data.cookie?.trim() || "",
+      token: data.token?.trim() || "",
+      bxUa: data.bxUa?.trim() || "",
+      bxUmidtoken: data.bxUmidtoken?.trim() || "",
+      userAgent:
+        data.userAgent?.trim() ||
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+      capturedAt: new Date().toISOString(),
+    };
+    return this.pool.add(creds);
+  }
+
+  removeCredentials(id: string): boolean {
+    return this.pool.remove(id);
+  }
+
+  resetCredentialStatus(id: string): void {
+    this.pool.resetStatus(id);
   }
 
   async captureCredentials(
     onStatus?: (msg: string) => void,
   ): Promise<BaseCredentials> {
-    const creds = await captureQwenCredentials(onStatus);
+    const creds = await captureQwenCredentials(onStatus, false);
+    this.pool.add(creds);
     this.resetClient();
     return creds;
   }
@@ -110,9 +142,8 @@ export class QwenProvider implements Provider {
     expiringSoon?: boolean;
     remainingMs?: number;
   } {
-    const creds = loadQwenCredentials();
+    const creds = this.pool.first() as QwenCredentials | null;
     if (!creds?.token) return { valid: false };
-    // 千问 token 是 JWT，尝试解析 exp
     try {
       const parts = creds.token.split(".");
       if (parts.length !== 3) return { valid: true, expiresAt: null };
@@ -138,24 +169,22 @@ export class QwenProvider implements Provider {
 
   // --- 客户端 ---
 
-  private getClient(): QwenWebClient {
-    const creds = loadQwenCredentials();
-    if (!creds) throw new Error("未找到通义千问凭证，请先捕获登录凭证");
-    return new QwenWebClient(creds);
-  }
-
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    const client = this.getClient();
     const prompt = this.buildPrompt(request.messages);
     const model = this.mapModel(request.model);
-
-    // 千问每次请求用新的 chatId
     const chatId = crypto.randomUUID();
 
     const isThinkingModel =
       model.includes("qwq") ||
       model.includes("qwen3.5") ||
       model.includes("qwen-max");
+
+    // 多账号轮询
+    const entry = this.pool.next();
+    if (!entry) throw new Error("未找到通义千问凭证，请先捕获登录凭证");
+
+    const creds = entry.credentials as QwenCredentials;
+    const client = new QwenWebClient(creds);
 
     let responseStream: ReadableStream<Uint8Array> | null = null;
 
@@ -167,17 +196,28 @@ export class QwenProvider implements Provider {
         thinkingEnabled: isThinkingModel,
         searchEnabled: true,
       });
+      this.pool.markSuccess(entry.id);
     } catch (chatErr: any) {
-      // 401/403 时重试一次
       if (chatErr.message?.includes("401") || chatErr.message?.includes("403")) {
-        responseStream = await client.chat({
-          message: prompt,
-          model,
-          chatId: crypto.randomUUID(),
-          thinkingEnabled: isThinkingModel,
-          searchEnabled: true,
-        });
+        this.pool.markFailed(entry.id, chatErr.message);
+        // 尝试切换到下一个凭证
+        const fallback = this.pool.next();
+        if (fallback && fallback.id !== entry.id) {
+          const fbCreds = fallback.credentials as QwenCredentials;
+          const fbClient = new QwenWebClient(fbCreds);
+          responseStream = await fbClient.chat({
+            message: prompt,
+            model,
+            chatId: crypto.randomUUID(),
+            thinkingEnabled: isThinkingModel,
+            searchEnabled: true,
+          });
+          this.pool.markSuccess(fallback.id);
+        } else {
+          throw chatErr;
+        }
       } else {
+        this.pool.markFailed(entry.id, chatErr.message);
         throw chatErr;
       }
     }

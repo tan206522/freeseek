@@ -69,6 +69,7 @@ function loadProxyConfig(): string | null {
 
 export async function captureCredentials(
   onStatus?: (msg: string) => void,
+  saveToFile = true,
 ): Promise<Credentials> {
   const log = onStatus ?? console.log;
 
@@ -142,9 +143,13 @@ export async function captureCredentials(
           capturedAt: new Date().toISOString(),
         };
 
-        fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
-        fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
-        log("凭证已捕获并保存到 data/auth.json");
+        if (saveToFile) {
+          fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
+          fs.writeFileSync(AUTH_FILE, JSON.stringify(creds, null, 2));
+          log("凭证已捕获并保存到 data/auth.json");
+        } else {
+          log("凭证已捕获");
+        }
         resolve(creds);
       }
     };

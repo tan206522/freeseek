@@ -42,6 +42,26 @@ contextBridge.exposeInMainWorld("freeseek", {
     userAgent?: string;
   }) => ipcRenderer.invoke("qwen:saveManual", creds),
 
+  // 通用凭证池管理
+  listCredentials: (providerId: string) =>
+    ipcRenderer.invoke("credentials:list", providerId),
+  addCredential: (providerId: string, data: Record<string, any>) =>
+    ipcRenderer.invoke("credentials:add", providerId, data),
+  removeCredential: (providerId: string, credentialId: string) =>
+    ipcRenderer.invoke("credentials:remove", providerId, credentialId),
+  resetCredential: (providerId: string, credentialId: string) =>
+    ipcRenderer.invoke("credentials:reset", providerId, credentialId),
+  reorderCredentials: (providerId: string, ids: string[]) =>
+    ipcRenderer.invoke("credentials:reorder", providerId, ids),
+  setCredentialStrategy: (providerId: string, strategy: string) =>
+    ipcRenderer.invoke("credentials:strategy", providerId, strategy),
+
+  // 请求队列
+  getQueueStatus: () => ipcRenderer.invoke("queue:status"),
+
+  // 凭证刷新器
+  getRefresherStatus: () => ipcRenderer.invoke("refresher:status"),
+
   // 日志监听
   onLog: (callback: (log: any) => void) => {
     const handler = (_event: any, log: any) => callback(log);
@@ -73,4 +93,13 @@ contextBridge.exposeInMainWorld("freeseek", {
   // 代理配置
   getProxy: () => ipcRenderer.invoke("proxy:get"),
   saveProxy: (proxy: string) => ipcRenderer.invoke("proxy:save", proxy),
+
+  // 设置
+  getSettings: () => ipcRenderer.invoke("settings:get"),
+  saveSettings: (data: {
+    apiKey?: string;
+    host?: string;
+    rateLimits?: Record<string, number>;
+    autoRefresh?: { enabled?: boolean; leadTimeMinutes?: number; checkIntervalSeconds?: number };
+  }) => ipcRenderer.invoke("settings:save", data),
 });
